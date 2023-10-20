@@ -1,57 +1,53 @@
 module Select.Core
   ( AllowCustom(..)
-  , CreateOptionRenderDescription
   , DropdownRenderDescription(..)
   , InFocus(..)
   , Input
   , InputRenderDescription
   , OptionRenderDescription
   , OptionState(..)
-  , Output
+  , Output(..)
   , RenderDescription
   , SelectBehaviour
   , SelectState(..)
-  , Dom
-  , component
+  , Dom(..)
+  , mkComponent
   , symbol
+  , liftDom
   ) where
 
 import Prelude
 
-import Type.Prelude (Proxy(..))
-
 import Control.Monad.State (class MonadState)
-
 import Data.Array as Array
+import Data.Generic.Rep (class Generic)
 import Data.Maybe (Maybe(..), maybe)
 import Data.Maybe as Maybe
-
-import Data.Generic.Rep (class Generic)
-import Data.Traversable (foldMap)
 import Data.Show.Generic (genericShow)
-
+import Data.Traversable (foldMap)
 import Halogen as H
 import Halogen.HTML (HTML)
 import Halogen.Query.Event as HQE
-
+import Type.Prelude (Proxy(..))
 import Web.DOM as WD
 import Web.DOM.Element as WDE
+import Web.Event.Event as WEE
+import Web.HTML.HTMLDocument as WHHD
 import Web.UIEvent.FocusEvent as WUF
 import Web.UIEvent.KeyboardEvent as WUK
 import Web.UIEvent.MouseEvent as WUM
-import Web.Event.Event as WEE
-import Web.HTML.HTMLDocument as WHHD
 
 symbol = Proxy :: Proxy "Select"
 
-type Input option =
+type Input input option =
   { options :: Array option
   , selected :: Maybe option
+  , input :: input
   }
 
-type Output option = Maybe option
+data Output option = Selected (Maybe option) | Blurred WUF.FocusEvent
 
-type Dom m =
+newtype Dom m = Dom
   { getDocument :: m WHHD.HTMLDocument
   , contains :: WD.Node -> WD.Node -> m Boolean
   , preventDefault :: WEE.Event -> m Unit
@@ -59,11 +55,20 @@ type Dom m =
   , scrollIntoView :: WD.Element -> m Unit
   }
 
-type SelectBehaviour option =
+liftDom :: forall ma mb. (ma ~> mb) -> Dom ma -> Dom mb
+liftDom f (Dom dom) = Dom
+  { getDocument: f dom.getDocument
+  , contains: \a b -> f (dom.contains a b)
+  , preventDefault: f <<< dom.preventDefault
+  , stopPropagation: f <<< dom.stopPropagation
+  , scrollIntoView: f <<< dom.scrollIntoView
+  }
+
+type SelectBehaviour input option =
   { optionLabel :: option -> String
   , allowCustom :: AllowCustom
   , search :: String -> Array option -> Array option
-  , render :: forall w. forall a. RenderDescription option a -> HTML w a
+  , render :: forall w. forall a. input -> RenderDescription option a -> HTML w a
   , parseCustom :: String -> Maybe option
   }
 
@@ -72,13 +77,23 @@ data AllowCustom = AllowCustom | ForbidCustom
 derive instance eqAllowCustom :: Eq AllowCustom
 
 type RenderDescription option a =
+  -- | the currently selected option if any
   { selected :: Maybe option
+  -- | The content of your input
   , value :: String
+  -- | whether the state is Closed, Opened, or Filtered
   , state :: SelectState
+  -- | This should be attached to the root element of your select.
   , onClick :: WUM.MouseEvent -> a
+  -- | This should be attached to the root element of your select.
   , onKeyDown :: WUK.KeyboardEvent -> a
+  -- | This should be attached to the root element of your select.
   , onFocusOut :: (WUF.FocusEvent -> a)
+  -- | This should be attached to the root element of your select.
+  , onBlur :: (WUF.FocusEvent -> a)
+  -- | This should be attached to the root element of your select.
   , label :: H.RefLabel
+  -- | Fire this (perhaps from a mouseevent) to cancel the selection.
   , onCancel :: (Maybe WUM.MouseEvent) -> a
   , dropdown :: DropdownRenderDescription option a
   , input :: InputRenderDescription a
@@ -99,7 +114,7 @@ type InputRenderDescription a =
 data DropdownRenderDescription option a
   = DontShow
   | ShowNoOptionsOption
-  | ShowOptionsAndCreateOption (Array (OptionRenderDescription option a)) (CreateOptionRenderDescription a)
+  | ShowOptionsAndCreateOption (Array (OptionRenderDescription option a)) (OptionRenderDescription String a)
   | ShowOptions (Array (OptionRenderDescription option a))
 
 type OptionRenderDescription option a =
@@ -107,20 +122,12 @@ type OptionRenderDescription option a =
   , onMouseEnter :: a
   , state :: OptionState
   , label :: H.RefLabel
-  , option :: option
+  , value :: option
   }
 
-type CreateOptionRenderDescription a =
-  { onClick :: a
-  , onMouseEnter :: a
-  , state :: OptionState
-  , label :: H.RefLabel
-  , value :: String
-  }
-
-data Action option
+data Action input option
   = Initialize
-  | ReceiveInput (Input option)
+  | ReceiveInput (Input input option)
   | OnClick WUM.MouseEvent
   | OnDocumentClick WEE.Event
   | OnOptionClicked option
@@ -131,6 +138,7 @@ data Action option
   | OnOptionMouseEnter (InFocus option)
   | OnCancel (Maybe WUM.MouseEvent)
   | OnFocusOut WUF.FocusEvent
+  | OnBlur WUF.FocusEvent
 
 data OptionState = OptionHovered | OptionSelected | OptionIdle
 
@@ -147,17 +155,26 @@ derive instance eqInFocus :: Eq option => Eq (InFocus option)
 instance showInFocus :: Show option => Show (InFocus option) where
   show = genericShow
 
-type State option =
+type State input option =
   { options :: Array option
   , state :: SelectState
   , value :: String
   , filteredOptions :: Array option
   , inFocus :: InFocus option
   , selected :: Maybe option
+  , input :: input
   }
 
-component :: forall m option query. Show option => Eq option => Monad m => Dom m -> SelectBehaviour option -> H.Component query (Input option) (Output option) m
-component dom behaviour@{ optionLabel } = H.mkComponent
+mkComponent
+  :: forall m option query input
+   . Show option
+  => Eq option
+  => Eq input
+  => Monad m
+  => Dom m
+  -> SelectBehaviour input option
+  -> H.Component query (Input input option) (Output option) m
+mkComponent (Dom dom) behaviour@{ optionLabel } = H.mkComponent
   { initialState
   , render
   , eval: H.mkEval $ H.defaultEval
@@ -168,26 +185,27 @@ component dom behaviour@{ optionLabel } = H.mkComponent
       }
   }
   where
-  initialState :: Input option -> State option
-  initialState { options, selected } =
+  initialState :: Input input option -> State input option
+  initialState { input, options, selected } =
     { options
     , state: Closed
     , value: maybe "" optionLabel selected
     , filteredOptions: options
     , inFocus: OptionInFocus 0
     , selected
+    , input
     }
 
-  handleAction :: Action option -> H.HalogenM (State option) (Action option) () (Output option) m Unit
+  handleAction :: Action input option -> H.HalogenM (State input option) (Action input option) () (Output option) m Unit
   handleAction = case _ of
     Initialize -> do
       document <- H.lift dom.getDocument
       let emitter = HQE.eventListener (WEE.EventType "click") (WHHD.toEventTarget document) (Just <<< OnDocumentClick)
       void $ H.subscribe emitter
-    ReceiveInput { options, selected } -> do
+    ReceiveInput { options, selected, input } -> do
       prev <- H.get
-      when (prev.options /= options || selected /= prev.selected) do
-        H.modify_ \state -> state { options = options, selected = selected, value = maybe "" optionLabel selected }
+      when (prev.options /= options || selected /= prev.selected || prev.input /= input) do
+        H.modify_ \state -> state { options = options, selected = selected, value = maybe "" optionLabel selected, input = input }
     OnClick _ -> do
       state <- H.gets _.state
       case state of
@@ -207,9 +225,21 @@ component dom behaviour@{ optionLabel } = H.mkComponent
           when (not withinSelect) $ abort
     OnKeyDown event -> do
       let key = WUK.key event
-      when (Array.any (eq key) [ "ArrowUp", "ArrowDown" ]) do
+      state <- H.gets _.state
+      let
+        ignoredKeys = case state of
+          Closed -> [ "ArrowUp", "ArrowDown", " " ]
+          Opened -> [ "ArrowUp", "ArrowDown", " " ]
+          _ -> [ "ArrowUp", "ArrowDown" ]
+      when (Array.any (eq key) ignoredKeys) do
         H.lift $ dom.preventDefault $ WUK.toEvent event
       { state } <- H.get
+      let
+        onEscape = do
+          case state of
+            Opened -> abort
+            Filtered -> abort
+            _ -> pure unit
       case key of
         "Enter" -> do
           case state of
@@ -217,11 +247,8 @@ component dom behaviour@{ optionLabel } = H.mkComponent
             Filtered -> makeChoice
             Closed -> do
               H.modify_ \state -> state { state = Opened }
-        "Escape" -> do
-          case state of
-            Opened -> abort
-            Filtered -> abort
-            _ -> pure unit
+        "Tab" -> onEscape
+        "Escape" -> onEscape
         "ArrowDown" -> do
           case state of
             Closed -> do
@@ -233,9 +260,16 @@ component dom behaviour@{ optionLabel } = H.mkComponent
           case state of
             Closed -> do
               H.modify_ \state -> state { state = Opened }
+              H.lift $ dom.preventDefault $ WUK.toEvent event
               moveFocus FocusBackward
             _ -> do
               moveFocus FocusBackward
+        " " -> do
+          case state of
+            Closed -> H.modify_ \state -> state { state = Opened }
+            Opened -> H.modify_ \state -> state { state = Closed }
+            _ -> pure unit
+
         _ -> pure unit
     PreventDefaultOnKeyDown preventedKeys event -> do
       let key = WUK.key event
@@ -249,12 +283,15 @@ component dom behaviour@{ optionLabel } = H.mkComponent
     OnCancel event -> do
       foldMap (H.lift <<< dom.stopPropagation <<< WUM.toEvent) event
       H.modify_ \state -> state { value = "", state = Closed, selected = Nothing }
-      H.raise Nothing
+      H.raise $ Selected Nothing
     OnFocusOut e -> do
       WUF.relatedTarget e >>= WDE.fromEventTarget # foldMap \element -> do
         H.getRef selectRefLabel >>= foldMap \select -> do
           withinTheSelect <- H.lift $ dom.contains (WDE.toNode select) (WDE.toNode element)
-          when (not withinTheSelect) abort
+          when (not withinTheSelect) do
+            abort
+            H.raise $ Blurred e
+    OnBlur e -> H.raise $ Blurred e
 
   abort = do
     state <- H.get
@@ -262,7 +299,7 @@ component dom behaviour@{ optionLabel } = H.mkComponent
     else case state.value of
       "" -> do
         H.modify_ \state -> state { state = Closed, selected = Nothing }
-        H.raise Nothing
+        H.raise $ Selected Nothing
       _ -> do
         H.modify_ \state -> state
           { state = Closed
@@ -287,14 +324,14 @@ component dom behaviour@{ optionLabel } = H.mkComponent
         "" -> state { state = Opened, filteredOptions = [] }
         _ -> state { state = Filtered, filteredOptions = filtered, inFocus = inFocus }
 
-  makeChoice :: forall i. H.HalogenM (State option) i () (Maybe option) m Unit
+  makeChoice :: forall i. H.HalogenM (State input option) i () (Output option) m Unit
   makeChoice = H.gets _.inFocus >>= case _ of
     NothingInFocus -> pure unit
     CreateInFocus option -> case behaviour.allowCustom of
       AllowCustom -> do
         moveFocusToInput
         H.modify_ \state -> state { state = Closed }
-        H.raise $ Just option
+        H.raise $ Selected $ Just option
       ForbidCustom -> pure unit
 
     OptionInFocus index -> do
@@ -308,14 +345,14 @@ component dom behaviour@{ optionLabel } = H.mkComponent
             { value = optionLabel selected
             , state = Closed
             }
-          H.raise $ Just selected
+          H.raise $ Selected $ Just selected
 
-  moveFocusToInput :: forall i o. H.HalogenM (State option) i () o m Unit
+  moveFocusToInput :: forall i o. H.HalogenM (State input option) i () o m Unit
   moveFocusToInput = do
     H.getRef inputRefLabel >>= foldMap \input -> do
       H.lift $ dom.scrollIntoView input
 
-  moveFocusToOption :: forall i o. Int -> H.HalogenM (State option) i () o m Unit
+  moveFocusToOption :: forall i o. Int -> H.HalogenM (State input option) i () o m Unit
   moveFocusToOption index = do
     H.getRef (optionRefLabel index) >>= foldMap \element -> do
       H.lift $ dom.scrollIntoView element
@@ -328,7 +365,7 @@ component dom behaviour@{ optionLabel } = H.mkComponent
       Nothing -> state
       Just custom -> state { inFocus = CreateInFocus custom }
 
-  currentOptions :: forall hm. MonadState (State option) hm => hm (Array option)
+  currentOptions :: forall hm. MonadState (State input option) hm => hm (Array option)
   currentOptions = H.get <#> \state ->
     if state.state == Filtered then state.filteredOptions else state.options
 
@@ -366,10 +403,10 @@ component dom behaviour@{ optionLabel } = H.mkComponent
 
   thereIsNoCorrespondingOption value options = Maybe.isNothing $ Array.find (optionLabel >>> eq value) options
 
-  render :: forall w. State option -> HTML w (Action option)
-  render = behaviour.render <<< makeRenderDescription
+  render :: forall w. State input option -> HTML w (Action input option)
+  render state = behaviour.render state.input $ makeRenderDescription state
 
-  makeRenderDescription :: State option -> RenderDescription option (Action option)
+  makeRenderDescription :: State input option -> RenderDescription option (Action input option)
   makeRenderDescription { selected, options, filteredOptions, value, state, inFocus } =
     { onClick: OnClick
     , onKeyDown: OnKeyDown
@@ -378,7 +415,7 @@ component dom behaviour@{ optionLabel } = H.mkComponent
         Closed, _ -> DontShow
         _, ForbidCustom | Array.null currentOptions -> ShowNoOptionsOption
         _, ForbidCustom -> ShowOptions $ Array.mapWithIndex makeOptionRenderDescription currentOptions
-        _, AllowCustom | thereIsNoCorrespondingOption value currentOptions -> case createOptionRenderDescription of
+        _, AllowCustom | value /= "" && thereIsNoCorrespondingOption value currentOptions -> case createOptionRenderDescription of
           Just createOptionRenderDescription -> ShowOptionsAndCreateOption (Array.mapWithIndex makeOptionRenderDescription currentOptions) createOptionRenderDescription
           Nothing -> case currentOptions of
             [] -> ShowNoOptionsOption
@@ -388,6 +425,7 @@ component dom behaviour@{ optionLabel } = H.mkComponent
     , selected
     , onFocusOut: OnFocusOut
     , onCancel: OnCancel
+    , onBlur: OnBlur
     , state
     , input: { onValueInput: SetValue, label: inputRefLabel }
     }
@@ -397,8 +435,8 @@ component dom behaviour@{ optionLabel } = H.mkComponent
       Opened -> options
       _ -> []
 
-    makeOptionRenderDescription :: Int -> option -> OptionRenderDescription option (Action option)
-    makeOptionRenderDescription i option = { onClick, onMouseEnter, state, label, option }
+    makeOptionRenderDescription :: Int -> option -> OptionRenderDescription option (Action input option)
+    makeOptionRenderDescription i option = { onClick, onMouseEnter, state, label, value: option }
       where
       onClick = OnOptionClicked option
       onMouseEnter = OnOptionMouseEnter $ OptionInFocus i

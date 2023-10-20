@@ -1,22 +1,17 @@
 { name = "halogen-erlesen"
-, dependencies = 
-  [ "prelude"
-  , "arrays"
-  , "maybe" 
-  , "arrays"
-  , "console"
-  , "effect"
+, dependencies =
+  [ "arrays"
   , "foldable-traversable"
   , "halogen"
   , "maybe"
   , "prelude"
+  , "stringutils"
   , "transformers"
   , "typelevel-prelude"
   , "web-dom"
   , "web-events"
   , "web-html"
-  , "web-uievents"
   ]
 , packages = ./packages.dhall
-, sources = [ "src/**/*.purs", "test/**/*.purs" ]
+, sources = [ "src/**/*.purs" ]
 }
