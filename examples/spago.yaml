@@ -1,0 +1,13 @@
+package:
+  dependencies:
+    - aff
+    - arrays
+    - console
+    - effect
+    - halogen
+    - halogen-erlesen
+    - js-date
+    - maybe
+    - prelude
+    - stringutils
+  name: halogen-erlesen-examples

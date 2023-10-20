@@ -2,25 +2,26 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    easy-purescript-nix.url = "github:justinwoo/easy-purescript-nix";
+    purescript-overlay.url = "github:thomashoneyman/purescript-overlay";
+    purescript-overlay.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { nixpkgs, flake-utils, easy-purescript-nix, ... }:
+  outputs = { nixpkgs, flake-utils, purescript-overlay, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = import nixpkgs { inherit system; };
-        easy-ps = easy-purescript-nix.packages.${system};
+        overlays = [ purescript-overlay.overlays.default ];
+        pkgs = import nixpkgs { inherit system overlays; };
       in
       {
         devShells = {
           default = pkgs.mkShell {
             name = "purs-shell";
             buildInputs = [
-              easy-ps.purs-0_15_9
-              easy-ps.spago
-              easy-ps.purescript-language-server
-              easy-ps.purs-tidy
-              easy-ps.purs-backend-es
+              pkgs.purs
+              pkgs.spago-unstable
+              pkgs.purescript-language-server
+              pkgs.purs-backend-es
+              pkgs.purs-tidy-bin.purs-tidy-0_10_0
               pkgs.nodejs_20
               pkgs.esbuild
               pkgs.just
