@@ -25,6 +25,13 @@ Do not call this function on every render, do it once for every variant of the s
 
 Look at the [Examples](./examples/src/Main.purs) for minimal examples.
 
+Run the examples:
+```bash
+spago build
+python -m http.server 8000 &
+firefox http://127.0.0.1:8000/examples/
+```
+
 ## Important Types
 
 The select accepts an array of options and the currently selected option as inputs:

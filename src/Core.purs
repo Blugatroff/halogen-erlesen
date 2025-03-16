@@ -227,10 +227,11 @@ mkComponent (Dom dom) behaviour@{ optionLabel } = H.mkComponent
       let key = WUK.key event
       state <- H.gets _.state
       let
-        ignoredKeys = case state of
-          Closed -> [ "ArrowUp", "ArrowDown", " " ]
-          Opened -> [ "ArrowUp", "ArrowDown", " " ]
-          _ -> [ "ArrowUp", "ArrowDown" ]
+        alwaysIgnoredKeys = [ "ArrowUp", "ArrowDown", "Enter" ]
+        ignoredKeys = alwaysIgnoredKeys <> case state of
+          Closed -> [ " " ]
+          Opened -> [ " " ]
+          _ -> []
       when (Array.any (eq key) ignoredKeys) do
         H.lift $ dom.preventDefault $ WUK.toEvent event
       { state } <- H.get
